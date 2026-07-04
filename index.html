@@ -648,6 +648,8 @@
       state.right = 0;
       state.selected.clear();
       state.answered = false;
+      els.nextBtn.textContent = "随机下一题";
+      els.nextBtn.disabled = true;
       state.wrongIds = [];
       state.mode = "all";
       rebuildQueue("all");
@@ -657,7 +659,9 @@
       els.totalCount.textContent = state.questions.length;
       els.doneCount.textContent = state.done;
       els.rightCount.textContent = state.right;
-      els.statusPill.textContent = state.questions.length ? (state.mode === "wrong" ? "错题模式" : "已导入") : "未导入";
+      els.statusPill.textContent = state.questions.length
+        ? (isRoundComplete() ? (state.mode === "wrong" ? "错题已完成" : "本轮已完成") : (state.mode === "wrong" ? "错题模式" : "已导入"))
+        : "未导入";
       els.wrongModeBtn.disabled = !state.wrongIds.length;
       els.wrongModeBtn.textContent = state.mode === "wrong" ? "返回全部题" : `只刷错题(${state.wrongIds.length})`;
       els.restartBtn.disabled = !state.questions.length;
@@ -685,6 +689,16 @@
       return state.questions.find(question => question.id === id) || null;
     }
 
+    function isRoundComplete() {
+      return state.queue.length > 0 && state.cursor >= state.queue.length;
+    }
+
+    function showRoundComplete() {
+      els.nextBtn.textContent = "本轮已完成";
+      els.nextBtn.disabled = true;
+      els.statusPill.textContent = state.mode === "wrong" ? "错题已完成" : "本轮已完成";
+    }
+
     function quizSignature(questions) {
       const stable = questions.map(question => ({
         question: question.question,
@@ -702,8 +716,13 @@
 
     function pickRandomQuestion() {
       if (!state.questions.length) return;
-      if (!state.queue.length || state.cursor >= state.queue.length) {
+      if (!state.queue.length) {
         rebuildQueue(state.mode);
+      }
+      if (state.cursor >= state.queue.length) {
+        showRoundComplete();
+        saveProgress();
+        return;
       }
       if (!state.queue.length) return;
       state.current = getQuestionById(state.queue[state.cursor]);
@@ -722,6 +741,8 @@
       els.feedback.classList.remove("show");
       els.feedback.textContent = "";
       els.submitBtn.disabled = false;
+      els.nextBtn.disabled = true;
+      els.nextBtn.textContent = "随机下一题";
       els.options.innerHTML = "";
 
       q.options.forEach(option => {
@@ -779,8 +800,16 @@
       });
 
       els.feedback.innerHTML = `${isRight ? "回答正确。" : "回答错误。"} 正确答案：<b>${correct.join("、")}</b>${state.current.rawAnswer && !/^[A-Z,，;；、\s]+$/i.test(state.current.rawAnswer) ? `（${escapeHtml(state.current.rawAnswer)}）` : ""}`;
+      if (isRoundComplete()) {
+        els.feedback.innerHTML += ` 本轮${state.mode === "wrong" ? "错题" : "题目"}已全部完成。`;
+      }
       els.feedback.classList.add("show");
       els.submitBtn.disabled = true;
+      if (isRoundComplete()) {
+        showRoundComplete();
+      } else {
+        els.nextBtn.disabled = false;
+      }
       updateStats();
       saveProgress();
     }

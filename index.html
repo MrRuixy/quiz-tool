@@ -604,10 +604,34 @@
       });
     }
 
+    async function readCsvText(file) {
+      const buffer = await file.arrayBuffer();
+      const utf8Text = new TextDecoder("utf-8", { fatal: false }).decode(buffer).replace(/^\uFEFF/, "");
+      const utf8Rows = parseCsv(utf8Text);
+      const utf8Headers = utf8Rows.length ? Object.keys(utf8Rows[0]) : [];
+      const utf8QuestionCol = findColumn(utf8Headers, ["题目", "题干", "问题", "试题", "question", "title", "stem"]);
+      const utf8AnswerCol = findColumn(utf8Headers, ["答案", "正确答案", "参考答案", "answer", "correct", "key"]);
+
+      if (utf8QuestionCol && utf8AnswerCol) return utf8Text;
+
+      try {
+        const gbText = new TextDecoder("gb18030", { fatal: false }).decode(buffer).replace(/^\uFEFF/, "");
+        const gbRows = parseCsv(gbText);
+        const gbHeaders = gbRows.length ? Object.keys(gbRows[0]) : [];
+        const gbQuestionCol = findColumn(gbHeaders, ["题目", "题干", "问题", "试题", "question", "title", "stem"]);
+        const gbAnswerCol = findColumn(gbHeaders, ["答案", "正确答案", "参考答案", "answer", "correct", "key"]);
+        if (gbQuestionCol && gbAnswerCol) return gbText;
+      } catch (error) {
+        console.warn("GB18030 CSV 解码失败", error);
+      }
+
+      return utf8Text;
+    }
+
     async function parseWorkbook(file) {
       if (/\.csv$/i.test(file.name)) {
-        const text = await file.text();
-        return { rows: parseCsv(text.replace(/^\uFEFF/, "")), sheetName: "CSV" };
+        const text = await readCsvText(file);
+        return { rows: parseCsv(text), sheetName: "CSV" };
       }
       if (!window.XLSX) {
         throw new Error("Excel 解析库未加载。请联网后刷新页面，或把 SheetJS xlsx 库下载到本地后引入。");

@@ -165,6 +165,24 @@
       margin-top: 4px;
     }
 
+    .saved-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px;
+      align-items: center;
+    }
+
+    select {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px;
+      background: #fff;
+      color: var(--ink);
+      font-size: 13px;
+      min-height: 42px;
+    }
+
     .stats {
       display: grid;
       grid-template-columns: repeat(3, 1fr);
@@ -313,7 +331,7 @@
     @media (max-width: 390px) {
       body { padding: 0; place-items: stretch; }
       .phone { min-height: 100vh; border-radius: 0; width: 100%; }
-      .file-row, .actions, .memory-actions { grid-template-columns: 1fr; }
+      .file-row, .saved-row, .actions, .memory-actions { grid-template-columns: 1fr; }
       .stats { grid-template-columns: 1fr 1fr 1fr; }
       .question { font-size: 16px; }
     }
@@ -336,6 +354,12 @@
         <div class="file-row">
           <input id="fileInput" type="file" accept=".xlsx,.xls,.csv" />
           <button id="loadSample" class="secondary">试用示例</button>
+        </div>
+        <div class="saved-row">
+          <select id="savedLibrarySelect">
+            <option value="">暂无已保存题库</option>
+          </select>
+          <button id="loadSavedBtn" class="secondary" disabled>打开题库</button>
         </div>
         <div class="memory-actions">
           <button id="wrongModeBtn" class="ghost" disabled>只刷错题</button>
@@ -372,8 +396,9 @@
     const LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
     const STORAGE_KEY = "quiz-tool-progress-v2";
     const DB_NAME = "quiz-tool-db";
-    const DB_VERSION = 1;
+    const DB_VERSION = 2;
     const STORE_NAME = "progress";
+    const LIBRARY_STORE = "libraries";
     const state = {
       questions: [],
       current: null,
@@ -382,6 +407,7 @@
       done: 0,
       right: 0,
       sheetName: "",
+      signature: "",
       queue: [],
       cursor: 0,
       wrongIds: [],
@@ -391,6 +417,8 @@
     const els = {
       fileInput: document.getElementById("fileInput"),
       loadSample: document.getElementById("loadSample"),
+      savedLibrarySelect: document.getElementById("savedLibrarySelect"),
+      loadSavedBtn: document.getElementById("loadSavedBtn"),
       wrongModeBtn: document.getElementById("wrongModeBtn"),
       restartBtn: document.getElementById("restartBtn"),
       sheetName: document.getElementById("sheetName"),
@@ -633,6 +661,21 @@
       return state.questions.find(question => question.id === id) || null;
     }
 
+    function quizSignature(questions) {
+      const stable = questions.map(question => ({
+        question: question.question,
+        options: question.options.map(option => [option.letter, option.text]),
+        answerLetters: question.answerLetters,
+        type: question.type
+      }));
+      const text = JSON.stringify(stable);
+      let hash = 0;
+      for (let index = 0; index < text.length; index += 1) {
+        hash = ((hash << 5) - hash + text.charCodeAt(index)) | 0;
+      }
+      return `${questions.length}:${Math.abs(hash)}`;
+    }
+
     function pickRandomQuestion() {
       if (!state.questions.length) return;
       if (!state.queue.length || state.cursor >= state.queue.length) {
@@ -718,9 +761,27 @@
       saveProgress();
     }
 
-    function loadQuestions(questions, name) {
+    async function loadQuestions(questions, name, options = {}) {
+      const signature = quizSignature(questions);
+      const saved = await readProgress();
       state.questions = questions;
       state.sheetName = name || "已载入题库";
+      state.signature = signature;
+      if (!options.skipLibrarySave) {
+        await writeLibrary({ name: state.sheetName, questions, signature });
+        await refreshSavedLibraries(signature);
+      }
+
+      const savedSignature = saved && (saved.signature || (Array.isArray(saved.questions) ? quizSignature(saved.questions) : ""));
+      if (saved && savedSignature === signature) {
+        applyProgressPayload(saved, questions, state.sheetName, signature);
+        els.sheetName.textContent = `${state.sheetName}（已恢复进度）`;
+        updateStats();
+        renderQuestion();
+        saveProgress();
+        return;
+      }
+
       resetProgress();
       els.sheetName.textContent = state.sheetName;
       updateStats();
@@ -740,10 +801,103 @@
           if (!db.objectStoreNames.contains(STORE_NAME)) {
             db.createObjectStore(STORE_NAME, { keyPath: "id" });
           }
+          if (!db.objectStoreNames.contains(LIBRARY_STORE)) {
+            db.createObjectStore(LIBRARY_STORE, { keyPath: "id" });
+          }
         };
         request.onsuccess = () => resolve(request.result);
         request.onerror = () => reject(request.error);
       });
+    }
+
+    async function writeLibrary({ name, questions, signature }) {
+      try {
+        const db = await openProgressDb();
+        await new Promise((resolve, reject) => {
+          const transaction = db.transaction(LIBRARY_STORE, "readwrite");
+          transaction.objectStore(LIBRARY_STORE).put({
+            id: signature,
+            name,
+            questions,
+            signature,
+            updatedAt: Date.now()
+          });
+          transaction.oncomplete = resolve;
+          transaction.onerror = () => reject(transaction.error);
+        });
+        db.close();
+      } catch (error) {
+        console.warn("保存题库失败", error);
+      }
+    }
+
+    async function readLibraries() {
+      try {
+        const db = await openProgressDb();
+        const libraries = await new Promise((resolve, reject) => {
+          const transaction = db.transaction(LIBRARY_STORE, "readonly");
+          const request = transaction.objectStore(LIBRARY_STORE).getAll();
+          request.onsuccess = () => resolve(request.result || []);
+          request.onerror = () => reject(request.error);
+        });
+        db.close();
+        return libraries.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+      } catch (error) {
+        console.warn("读取题库列表失败", error);
+        return [];
+      }
+    }
+
+    async function readLibrary(id) {
+      try {
+        const db = await openProgressDb();
+        const library = await new Promise((resolve, reject) => {
+          const transaction = db.transaction(LIBRARY_STORE, "readonly");
+          const request = transaction.objectStore(LIBRARY_STORE).get(id);
+          request.onsuccess = () => resolve(request.result || null);
+          request.onerror = () => reject(request.error);
+        });
+        db.close();
+        return library;
+      } catch (error) {
+        console.warn("读取题库失败", error);
+        return null;
+      }
+    }
+
+    async function refreshSavedLibraries(selectedId = state.signature) {
+      const libraries = await readLibraries();
+      els.savedLibrarySelect.innerHTML = "";
+      if (!libraries.length) {
+        const option = document.createElement("option");
+        option.value = "";
+        option.textContent = "暂无已保存题库";
+        els.savedLibrarySelect.appendChild(option);
+        els.loadSavedBtn.disabled = true;
+        return;
+      }
+      libraries.forEach(library => {
+        const option = document.createElement("option");
+        option.value = library.id;
+        option.textContent = `${library.name || "未命名题库"}（${library.questions.length}题）`;
+        els.savedLibrarySelect.appendChild(option);
+      });
+      if (selectedId && libraries.some(library => library.id === selectedId)) {
+        els.savedLibrarySelect.value = selectedId;
+      }
+      els.loadSavedBtn.disabled = false;
+    }
+
+    async function loadSavedLibrary() {
+      const id = els.savedLibrarySelect.value;
+      if (!id) return;
+      const library = await readLibrary(id);
+      if (!library || !Array.isArray(library.questions) || !library.questions.length) {
+        alert("没有读取到这个题库，请重新导入一次。");
+        await refreshSavedLibraries();
+        return;
+      }
+      await loadQuestions(library.questions, library.name, { skipLibrarySave: true });
     }
 
     async function writeProgress(payload) {
@@ -759,7 +913,8 @@
         localStorage.setItem(STORAGE_KEY, JSON.stringify({
           savedAt: payload.savedAt,
           sheetName: payload.sheetName,
-          total: payload.questions.length
+          total: payload.questions.length,
+          signature: payload.signature
         }));
       } catch (error) {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
@@ -795,6 +950,7 @@
         done: state.done,
         right: state.right,
         sheetName: state.sheetName,
+        signature: state.signature || quizSignature(state.questions),
         queue: state.queue,
         cursor: state.cursor,
         wrongIds: state.wrongIds,
@@ -804,26 +960,38 @@
       writeProgress(payload).catch(error => console.warn("保存进度失败", error));
     }
 
+    function applyProgressPayload(payload, questions = payload.questions, sheetName = payload.sheetName, signature = payload.signature) {
+      state.questions = questions;
+      state.done = Number(payload.done) || 0;
+      state.right = Number(payload.right) || 0;
+      state.sheetName = sheetName || "已恢复题库";
+      state.signature = signature || quizSignature(questions);
+      const validIds = new Set(state.questions.map(question => question.id));
+      state.queue = Array.isArray(payload.queue) ? payload.queue.filter(id => validIds.has(id)) : [];
+      state.cursor = Number(payload.cursor) || 0;
+      state.wrongIds = Array.isArray(payload.wrongIds) ? payload.wrongIds.filter(id => validIds.has(id)) : [];
+      state.mode = payload.mode === "wrong" ? "wrong" : "all";
+      state.current = payload.currentId ? getQuestionById(payload.currentId) : null;
+      if (!state.current) {
+        if (!state.queue.length || state.cursor >= state.queue.length) rebuildQueue(state.mode);
+        state.current = getQuestionById(state.queue[state.cursor]) || state.questions[0];
+      }
+      state.selected.clear();
+      state.answered = false;
+    }
+
     async function restoreProgress() {
       try {
         const payload = await readProgress();
         if (!payload) return false;
         if (!Array.isArray(payload.questions) || !payload.questions.length) return false;
-        state.questions = payload.questions;
-        state.done = Number(payload.done) || 0;
-        state.right = Number(payload.right) || 0;
-        state.sheetName = payload.sheetName || "已恢复题库";
-        state.queue = Array.isArray(payload.queue) ? payload.queue : [];
-        state.cursor = Number(payload.cursor) || 0;
-        state.wrongIds = Array.isArray(payload.wrongIds) ? payload.wrongIds : [];
-        state.mode = payload.mode === "wrong" ? "wrong" : "all";
-        state.current = payload.currentId ? getQuestionById(payload.currentId) : null;
-        if (!state.current) {
-          if (!state.queue.length || state.cursor >= state.queue.length) rebuildQueue(state.mode);
-          state.current = getQuestionById(state.queue[state.cursor]) || state.questions[0];
-        }
-        state.selected.clear();
-        state.answered = false;
+        applyProgressPayload(payload);
+        await writeLibrary({
+          name: state.sheetName,
+          questions: state.questions,
+          signature: state.signature
+        });
+        await refreshSavedLibraries(state.signature);
         els.sheetName.textContent = state.sheetName;
         updateStats();
         renderQuestion();
@@ -887,8 +1055,10 @@
 
     els.submitBtn.addEventListener("click", submitAnswer);
     els.nextBtn.addEventListener("click", pickRandomQuestion);
+    els.loadSavedBtn.addEventListener("click", loadSavedLibrary);
     els.restartBtn.addEventListener("click", restartPractice);
     els.wrongModeBtn.addEventListener("click", toggleWrongMode);
+    refreshSavedLibraries();
     restoreProgress().then(restored => {
       if (!restored) updateStats();
     });

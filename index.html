@@ -148,10 +148,21 @@
       background: #2f3f35;
     }
 
+    .danger {
+      background: #9f3c32;
+    }
+
     .ghost {
       background: transparent;
       color: var(--ink);
       border: 1px solid var(--line);
+    }
+
+    .memory-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-top: 4px;
     }
 
     .stats {
@@ -302,7 +313,7 @@
     @media (max-width: 390px) {
       body { padding: 0; place-items: stretch; }
       .phone { min-height: 100vh; border-radius: 0; width: 100%; }
-      .file-row, .actions { grid-template-columns: 1fr; }
+      .file-row, .actions, .memory-actions { grid-template-columns: 1fr; }
       .stats { grid-template-columns: 1fr 1fr 1fr; }
       .question { font-size: 16px; }
     }
@@ -326,6 +337,10 @@
           <input id="fileInput" type="file" accept=".xlsx,.xls,.csv" />
           <button id="loadSample" class="secondary">试用示例</button>
         </div>
+        <div class="memory-actions">
+          <button id="wrongModeBtn" class="ghost" disabled>只刷错题</button>
+          <button id="restartBtn" class="danger" disabled>重新开始</button>
+        </div>
       </section>
 
       <section class="stats">
@@ -348,25 +363,33 @@
       </section>
 
       <div class="sample">
-        推荐表头：<code>题目</code>、<code>A</code>、<code>B</code>、<code>C</code>、<code>D</code>、<code>答案</code>、<code>题型</code>。选项列也支持 <code>选项A</code>、<code>optionA</code>、<code>选项1</code>。答案可写 <code>A</code>、<code>AB</code>、<code>A,B</code> 或选项文字。
+        题库和进度会保存在当前浏览器。推荐表头：<code>题目</code>、<code>A</code>、<code>B</code>、<code>C</code>、<code>D</code>、<code>答案</code>、<code>题型</code>。选项列也支持 <code>选项A</code>、<code>optionA</code>、<code>选项1</code>。答案可写 <code>A</code>、<code>AB</code>、<code>A,B</code> 或选项文字。
       </div>
     </main>
   </div>
 
   <script>
     const LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
+    const STORAGE_KEY = "quiz-tool-progress-v2";
     const state = {
       questions: [],
       current: null,
       selected: new Set(),
       answered: false,
       done: 0,
-      right: 0
+      right: 0,
+      sheetName: "",
+      queue: [],
+      cursor: 0,
+      wrongIds: [],
+      mode: "all"
     };
 
     const els = {
       fileInput: document.getElementById("fileInput"),
       loadSample: document.getElementById("loadSample"),
+      wrongModeBtn: document.getElementById("wrongModeBtn"),
+      restartBtn: document.getElementById("restartBtn"),
       sheetName: document.getElementById("sheetName"),
       statusPill: document.getElementById("statusPill"),
       totalCount: document.getElementById("totalCount"),
@@ -570,21 +593,55 @@
       state.right = 0;
       state.selected.clear();
       state.answered = false;
+      state.wrongIds = [];
+      state.mode = "all";
+      rebuildQueue("all");
     }
 
     function updateStats() {
       els.totalCount.textContent = state.questions.length;
       els.doneCount.textContent = state.done;
       els.rightCount.textContent = state.right;
-      els.statusPill.textContent = state.questions.length ? "已导入" : "未导入";
+      els.statusPill.textContent = state.questions.length ? (state.mode === "wrong" ? "错题模式" : "已导入") : "未导入";
+      els.wrongModeBtn.disabled = !state.wrongIds.length;
+      els.wrongModeBtn.textContent = state.mode === "wrong" ? "返回全部题" : `只刷错题(${state.wrongIds.length})`;
+      els.restartBtn.disabled = !state.questions.length;
+    }
+
+    function shuffle(items) {
+      const copy = [...items];
+      for (let index = copy.length - 1; index > 0; index -= 1) {
+        const swapIndex = Math.floor(Math.random() * (index + 1));
+        [copy[index], copy[swapIndex]] = [copy[swapIndex], copy[index]];
+      }
+      return copy;
+    }
+
+    function rebuildQueue(mode = state.mode) {
+      state.mode = mode;
+      const source = mode === "wrong"
+        ? state.questions.filter(question => state.wrongIds.includes(question.id))
+        : state.questions;
+      state.queue = shuffle(source.map(question => question.id));
+      state.cursor = 0;
+    }
+
+    function getQuestionById(id) {
+      return state.questions.find(question => question.id === id) || null;
     }
 
     function pickRandomQuestion() {
       if (!state.questions.length) return;
-      state.current = state.questions[Math.floor(Math.random() * state.questions.length)];
+      if (!state.queue.length || state.cursor >= state.queue.length) {
+        rebuildQueue(state.mode);
+      }
+      if (!state.queue.length) return;
+      state.current = getQuestionById(state.queue[state.cursor]);
+      state.cursor += 1;
       state.selected.clear();
       state.answered = false;
       renderQuestion();
+      saveProgress();
     }
 
     function renderQuestion() {
@@ -639,6 +696,11 @@
       state.answered = true;
       state.done += 1;
       if (isRight) state.right += 1;
+      if (isRight) {
+        state.wrongIds = state.wrongIds.filter(id => id !== state.current.id);
+      } else if (!state.wrongIds.includes(state.current.id)) {
+        state.wrongIds.push(state.current.id);
+      }
 
       [...els.options.children].forEach(button => {
         const letter = button.dataset.letter;
@@ -650,14 +712,88 @@
       els.feedback.classList.add("show");
       els.submitBtn.disabled = true;
       updateStats();
+      saveProgress();
     }
 
     function loadQuestions(questions, name) {
       state.questions = questions;
+      state.sheetName = name || "已载入题库";
       resetProgress();
-      els.sheetName.textContent = name || "已载入题库";
+      els.sheetName.textContent = state.sheetName;
       updateStats();
       pickRandomQuestion();
+      saveProgress();
+    }
+
+    function saveProgress() {
+      if (!state.questions.length) return;
+      const payload = {
+        questions: state.questions,
+        currentId: state.current ? state.current.id : null,
+        done: state.done,
+        right: state.right,
+        sheetName: state.sheetName,
+        queue: state.queue,
+        cursor: state.cursor,
+        wrongIds: state.wrongIds,
+        mode: state.mode,
+        savedAt: Date.now()
+      };
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+      } catch (error) {
+        console.warn("保存进度失败", error);
+      }
+    }
+
+    function restoreProgress() {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if (!raw) return false;
+        const payload = JSON.parse(raw);
+        if (!Array.isArray(payload.questions) || !payload.questions.length) return false;
+        state.questions = payload.questions;
+        state.done = Number(payload.done) || 0;
+        state.right = Number(payload.right) || 0;
+        state.sheetName = payload.sheetName || "已恢复题库";
+        state.queue = Array.isArray(payload.queue) ? payload.queue : [];
+        state.cursor = Number(payload.cursor) || 0;
+        state.wrongIds = Array.isArray(payload.wrongIds) ? payload.wrongIds : [];
+        state.mode = payload.mode === "wrong" ? "wrong" : "all";
+        state.current = payload.currentId ? getQuestionById(payload.currentId) : null;
+        if (!state.current) {
+          if (!state.queue.length || state.cursor >= state.queue.length) rebuildQueue(state.mode);
+          state.current = getQuestionById(state.queue[state.cursor]) || state.questions[0];
+        }
+        state.selected.clear();
+        state.answered = false;
+        els.sheetName.textContent = state.sheetName;
+        updateStats();
+        renderQuestion();
+        return true;
+      } catch (error) {
+        console.warn("恢复进度失败", error);
+        return false;
+      }
+    }
+
+    function restartPractice() {
+      if (!state.questions.length) return;
+      if (!confirm("确定重新开始吗？当前答题统计和错题记录会清空，但题库会保留。")) return;
+      resetProgress();
+      updateStats();
+      pickRandomQuestion();
+      saveProgress();
+    }
+
+    function toggleWrongMode() {
+      if (!state.questions.length) return;
+      const nextMode = state.mode === "wrong" ? "all" : "wrong";
+      if (nextMode === "wrong" && !state.wrongIds.length) return;
+      rebuildQueue(nextMode);
+      updateStats();
+      pickRandomQuestion();
+      saveProgress();
     }
 
     function escapeHtml(value) {
@@ -694,7 +830,9 @@
 
     els.submitBtn.addEventListener("click", submitAnswer);
     els.nextBtn.addEventListener("click", pickRandomQuestion);
-    updateStats();
+    els.restartBtn.addEventListener("click", restartPractice);
+    els.wrongModeBtn.addEventListener("click", toggleWrongMode);
+    if (!restoreProgress()) updateStats();
   </script>
 </body>
 </html>

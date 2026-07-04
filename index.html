@@ -387,7 +387,7 @@
       </section>
 
       <div class="sample">
-        题库和进度会保存在当前浏览器。推荐表头：<code>题目</code>、<code>A</code>、<code>B</code>、<code>C</code>、<code>D</code>、<code>答案</code>、<code>题型</code>。选项列也支持 <code>选项A</code>、<code>optionA</code>、<code>选项1</code>。答案可写 <code>A</code>、<code>AB</code>、<code>A,B</code> 或选项文字。
+        题库和进度会保存在当前浏览器。推荐表头：<code>题目</code>、<code>A</code>、<code>B</code>、<code>C</code>、<code>D</code>、<code>答案</code>、<code>题型</code>。选项列也支持 <code>选项A</code>、<code>optionA</code>、<code>选项1</code>。答案可写 <code>A</code>、<code>AB</code>、<code>A,B</code> 或选项文字。当前版本：<code>2026-07-04-2</code>
       </div>
     </main>
   </div>
@@ -740,8 +740,8 @@
       els.typeTag.textContent = q.type === "multiple" ? "多选题" : "单选题";
       els.feedback.classList.remove("show");
       els.feedback.textContent = "";
-      els.submitBtn.disabled = false;
-      els.nextBtn.disabled = true;
+      els.submitBtn.disabled = state.answered;
+      els.nextBtn.disabled = !state.answered;
       els.nextBtn.textContent = "随机下一题";
       els.options.innerHTML = "";
 
@@ -754,6 +754,12 @@
         button.addEventListener("click", () => toggleOption(option.letter));
         els.options.appendChild(button);
       });
+
+      if (state.answered) {
+        els.feedback.textContent = isRoundComplete() ? "本轮题目已全部完成。" : "当前题已提交，请进入下一题。";
+        els.feedback.classList.add("show");
+        if (isRoundComplete()) showRoundComplete();
+      }
     }
 
     function toggleOption(letter) {
@@ -1008,6 +1014,7 @@
         cursor: state.cursor,
         wrongIds: state.wrongIds,
         mode: state.mode,
+        answered: state.answered,
         savedAt: Date.now()
       };
       writeProgress(payload).catch(error => console.warn("保存进度失败", error));
@@ -1030,7 +1037,7 @@
         state.current = getQuestionById(state.queue[state.cursor]) || state.questions[0];
       }
       state.selected.clear();
-      state.answered = false;
+      state.answered = Boolean(payload.answered);
     }
 
     async function restoreProgress() {
